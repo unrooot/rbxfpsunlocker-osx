@@ -41,7 +41,7 @@ pid_t get_roblox_process_id() {
     while (pos >= 0 && path[pos] != '/') pos--;
 
     std::strcpy(name, path + pos + 1);
-    if (std::strcmp(name, "RobloxPlayer") == 0) return ids[i];
+    if (std::strcmp(name, "RobloxPlayer") == 0 || std::strcmp(name, "RobloxStudio") == 0) return ids[i];
   }
 
   return 0;
@@ -67,14 +67,14 @@ bool init_roblox_struct() {
   size = 24 * image_infos->infoArrayCount;
   if (vm_read(roblox.task, (mach_vm_address_t)image_infos->infoArray, size, &read_buffer, &size) != KERN_SUCCESS) return false;
   auto info = (struct dyld_image_info*)read_buffer;
-  
+
   for (auto i = 0; i < image_infos->infoArrayCount; i++) {
     size = 1024;
     vm_read(roblox.task, (mach_vm_address_t)info[i].imageFilePath, size, &read_buffer, &size);
     auto path = (char*)read_buffer;
 
     if (!path) continue;
-    if (std::strstr(path, "/RobloxPlayer") == NULL) continue;
+    if (std::strstr(path, "/RobloxPlayer") == NULL || std::strstr(path, "/RobloxStudio") == NULL) continue;
 
     struct stat st;
     stat(path, &st);
@@ -132,13 +132,21 @@ std::uint8_t* find_sig(const void* start, const void* end, const char* sig, cons
 mach_vm_address_t find_task_scheduler() {
   auto data = read_data(roblox.load_address, roblox.size);
   auto address = (mach_vm_address_t)find_sig(data, data + roblox.size, "\xBF\xF0\x02\x00\x00\xE8\x00\x00\x00\x00\x48\x89\xC3\x48\x89\xC7\xE8\x00\x00\x00\x00\x48\x89\x1D\x00\x00\x00\x00", 28);
+  auto studio_address = (mach_vm_address_t)find_sig(data, data + roblox.size, "\xBF\x10\x03\x00\x00\xE8\x00\x00\x00\x00\x48\x89\xC3\x48\x89\xDF\xE8\x00\x00\x00\x00\x48\x89\x1D\x00\x00\x00\x00", 24);
 
-  if (!address) throw std::logic_error("Couldn't find the task scheduler pattern.\nRoblox updates can cause this.\nCheck the GitHub for any new updates.");
+  if (!address && !studio_address) throw std::logic_error("Couldn't find the task scheduler pattern for studio or the player.\nRoblox updates can cause this.\nCheck the GitHub for any new updates.");
 
-  mach_vm_address_t res = roblox.load_address + ((address + *(std::uint32_t*)(address + 24) + 28) - (mach_vm_address_t)data);
-  vm_deallocate(current_task(), (vm_offset_t)data, roblox.size);
+  if (studio_address) {
+    mach_vm_address_t res = roblox.load_address + ((studio_address + *(std::uint32_t*)(studio_address + 24) + 28) - (mach_vm_address_t)data);
+    vm_deallocate(current_task(), (vm_offset_t)data, roblox.size);
+    return res;
+  }
 
-  return res;
+  if (address) {
+    mach_vm_address_t res = roblox.load_address + ((address + *(std::uint32_t*)(address + 24) + 28) - (mach_vm_address_t)data);
+    vm_deallocate(current_task(), (vm_offset_t)data, roblox.size);
+    return res;
+  }
 }
 
 int main(int argc, const char** argv) {
@@ -152,7 +160,7 @@ int main(int argc, const char** argv) {
       cap = std::strtoul(*argv, NULL, 0);
       if(cap == 0) cap = 120;
     } else cap = 120;
-    
+
     if (!init_roblox_struct()) throw std::logic_error("Failed to get Roblox process info.\nMake sure Roblox is open and try again.");
 
     auto task_scheduler = read_memory<mach_vm_address_t>(find_task_scheduler());
